@@ -1,4 +1,4 @@
-﻿name: RAZZO Shard Worker
+name: RAZZO Shard Worker
 on:
   push:
     paths:
@@ -68,4 +68,3 @@ jobs:
         with:
           name: razzo-receipt-${{ inputs.execution_id }}
           path: receipts/${{ inputs.execution_id }}.json
-
