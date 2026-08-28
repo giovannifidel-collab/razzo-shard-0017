@@ -1,0 +1,87 @@
+name: gio-OS Lavender Ramdisk Device Inputs
+
+on:
+  push:
+    paths:
+      - '.github/workflows/gio-lavender-ramdisk-device-inputs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DEVICE_REPO: https://github.com/crdroidandroid/android_device_xiaomi_lavender.git
+  DEVICE_SHA: fd2a90e734a101fad046736970fa4dfb492d7d78
+
+jobs:
+  capsule:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fetch exact lavender device tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init device
+          git -C device remote add origin "$DEVICE_REPO"
+          git -C device fetch --depth=1 origin "$DEVICE_SHA"
+          git -C device checkout --detach FETCH_HEAD
+          test "$(git -C device rev-parse HEAD)" = "$DEVICE_SHA"
+
+      - name: Materialize device-owned ramdisk inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf capsule
+          mkdir -p capsule/ramdisk capsule/root
+
+          # Board make rules place this exact file in TARGET_RAMDISK_OUT.
+          install -m 0644 device/rootdir/etc/fstab.qcom capsule/ramdisk/fstab.qcom
+
+          # This device-owned recovery/root input is tracked separately; it is
+          # not sufficient to claim a complete boot ramdisk.
+          install -m 0644 device/rootdir/etc/init.recovery.qcom.rc capsule/root/init.recovery.qcom.rc
+
+          sha256sum capsule/ramdisk/fstab.qcom capsule/root/init.recovery.qcom.rc > capsule/SHA256SUMS
+          printf '%s\n' "$DEVICE_SHA" > capsule/device-source-sha.txt
+
+          python3 - <<'PY'
+          import hashlib, json, pathlib
+          root = pathlib.Path('capsule')
+          files=[]
+          for p in sorted(x for x in root.rglob('*') if x.is_file() and x.name != 'manifest.json'):
+              b=p.read_bytes()
+              files.append({'path':str(p.relative_to(root)), 'size_bytes':len(b), 'sha256':hashlib.sha256(b).hexdigest()})
+          manifest={
+            'schema':'gio.build-capsule.v1',
+            'id':'lavender-ramdisk-device-inputs-a14-r1',
+            'kind':'ramdisk-device-inputs',
+            'target':'lavender',
+            'source_repository':'https://github.com/crdroidandroid/android_device_xiaomi_lavender.git',
+            'source_revision':'fd2a90e734a101fad046736970fa4dfb492d7d78',
+            'satisfies_final_role':False,
+            'final_role':'boot-ramdisk',
+            'note':'Device-owned inputs only. A complete boot ramdisk additionally requires Android-generated core init/runtime content.',
+            'files':files,
+          }
+          (root/'manifest.json').write_text(json.dumps(manifest,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Create deterministic capsule archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf lavender-ramdisk-device-inputs-a14-r1.tar.gz -C capsule .
+          sha256sum lavender-ramdisk-device-inputs-a14-r1.tar.gz > lavender-ramdisk-device-inputs-a14-r1.tar.gz.sha256
+          du -sh device capsule lavender-ramdisk-device-inputs-a14-r1.tar.gz | tee working-set.txt
+
+      - name: Upload ephemeral Build Capsule
+        uses: actions/upload-artifact@v4
+        with:
+          name: gio-lavender-ramdisk-device-inputs-a14-r1
+          path: |
+            lavender-ramdisk-device-inputs-a14-r1.tar.gz
+            lavender-ramdisk-device-inputs-a14-r1.tar.gz.sha256
+            working-set.txt
+          retention-days: 7
